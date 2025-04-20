@@ -43,7 +43,6 @@ with open("data/prompts.txt", "w") as f:
 seed = 3
 args.infer_steps = 50
 width, height = 960, 544
-width, height = 500, 344
 video_length = 97
 
 for prompt in all_prompts:
