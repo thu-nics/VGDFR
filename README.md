@@ -1,5 +1,6 @@
 # VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate
 This is the official implementation of the paper [VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate](https://arxiv.org/abs/2504.12259).
+Diffusion Transformer(DiT)-based generation models have achieved remarkable success in video generation. However, their inherent computational demands pose significant efficiency challenges. We exploit the inherent temporal non-uniformity of real-world videos and observe that videos exhibit dynamic information density, with high-motion segments demanding greater detail preservation than static scenes. Inspired by this temporal non-uniformity, we propose VGDFR, a training-free approach for Diffusion-based Video Generation with Dynamic Latent Frame Rate. VGDFR adaptively adjusts the number of elements in latent space based on the motion frequency of the latent space content, using fewer tokens for low-frequency segments while preserving detail in high-frequency segments. Experiments show that VGDFR can achieve a speedup up to 3x for video generation.
 
 <!-- ## Result Show -->
 

@@ -1,15 +1,13 @@
-def similarity_threhshold_schedule(image_reshape, ssim_results1, ssim_results2, ssim_results3, similarity_threshold):
+def similarity_threhshold_schedule(
+    image_reshape, ssim_results1, ssim_results2, ssim_results3, similarity_threshold, enable_4x4merge=False
+):
     merge2x4_inds = []
     merge4x4_inds = []
     latent_remain_inds = [_ for _ in range(len(image_reshape) // 4 + 1)]
     video_remain_inds = [_ for _ in range(len(image_reshape))]
     merge_plan = []
     ind = 1
-    if similarity_threshold < 0.5:
-        enable_4x4merge = True
-        print("Enable 4x4 merge because similarity_threshold < 0.5")
-    else:
-        enable_4x4merge = False
+
     while ind < len(image_reshape) - 8 - 1:  # gurantee the last frame cannot be merged
         # 4x4 merge
         if enable_4x4merge and ind < len(image_reshape) - 16 - 1:
@@ -62,7 +60,12 @@ def compress_ratio_schedule(image_reshape, ssim_results1, ssim_results2, ssim_re
         # print(f"Test similarity_threshold: {similarity_threshold}")
         merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds = (
             similarity_threhshold_schedule(
-                image_reshape, ssim_results1, ssim_results2, ssim_results3, similarity_threshold
+                image_reshape,
+                ssim_results1,
+                ssim_results2,
+                ssim_results3,
+                similarity_threshold,
+                enable_4x4merge=similarity_threshold < 0.5,
             )
         )
         if len(video_remain_inds) / len(image_reshape) < compress_ratio:
@@ -78,7 +81,17 @@ def compress_ratio_schedule(image_reshape, ssim_results1, ssim_results2, ssim_re
     # print("left_similarity_threshold: ", left_similarity_threshold)
     # print("right_similarity_threshold: ", right_similarity_threshold)
     similarity_threshold = (left_similarity_threshold + right_similarity_threshold) / 2
+    if similarity_threshold < 0.5:
+        enable_4x4merge = True
+        print("Enable 4x4 merge because similarity_threshold < 0.5")
+    else:
+        enable_4x4merge = False
     merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds = similarity_threhshold_schedule(
-        image_reshape, ssim_results1, ssim_results2, ssim_results3, similarity_threshold
+        image_reshape,
+        ssim_results1,
+        ssim_results2,
+        ssim_results3,
+        similarity_threshold,
+        enable_4x4merge=enable_4x4merge,
     )
     return merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds
