@@ -8,7 +8,8 @@ import torch.nn as nn
 from VGDFR.metric import calculate_videos_ssim
 from pytorch_msssim import ssim as calc_ssim_func
 from hyvideo.modules.models import HYVideoDiffusionTransformer, get_cu_seqlens
-
+from VGDFR.frame_interpolate import RIFEInterpolator
+from hyvideo.vae import load_vae
 
 def mod_rope_forward(
     self,
@@ -313,7 +314,58 @@ class DyLatentMergeModRoPEGenSampler(HunyuanVideoSampler):
 
 
 class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
-    def merge_latents(self, latents_with_noise, freqs_cis, noise_pred, latent_noise, sim_threshold=0.5):
+    def __init__(
+        self,
+        vae: AutoencoderKL,
+        text_encoder: TextEncoder,
+        transformer: HYVideoDiffusionTransformer,
+        scheduler: KarrasDiffusionSchedulers,
+        text_encoder_2: Optional[TextEncoder] = None,
+        progress_bar_config: Dict[str, Any] = None,
+        args=None,
+    ):
+        super().__init__(
+            vae,text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args
+        )
+        self.frame_interpolator = RIFEInterpolator()
+        # Init compression module
+        self.compression_vae_module=self.init_compression_vae_module()
+        self.compression_info=None
+
+    def init_compression_vae_module(self):
+        compression_vae_module, _, s_ratio, t_ratio = load_vae(
+            vae_type="884-16c-hy",         
+            vae_precision="fp16",
+            logger=logger,
+            vae_path="ckpts/hunyuan-video-t2v-720p/vae",
+            device="cuda",
+        )
+        compression_vae_module=compression_vae_module.eval()
+        compression_vae_module.enable_tiling()
+        for name,module in compression_vae_module.decoder.named_modules():
+            if isinstance(module,UpsampleCausal3D):
+                # if module.upsample_factor[1]>1 and "_blocks.2" not in name:
+                if module.upsample_factor[1]>1 and "_blocks.0" in name:
+                    module._raw_upsample_factor=module.upsample_factor
+                    module.upsample_factor=(module.upsample_factor[0],1,1)
+                    print(f"UpsampleCausal3D {name}: convert {module._raw_upsample_factor} to {module.upsample_factor}")
+                
+        for name,module in compression_vae_module.encoder.named_modules():
+            if isinstance(module,CausalConv3d):
+                module=module.conv
+                # if module.stride[1]==2 and "_blocks.0" not in name:
+                if module.stride[1]==2 and "_blocks.2" in name:
+                    module._raw_stride=module.stride
+                    module.stride=(module.stride[0],1,1)
+                    print(f"Downsample Conv3d {name}: convert {module._raw_stride} to {module.stride}")
+        # print(compression_module.tile_latent_min_size)
+        compression_vae_module.tile_latent_min_size=64
+        return compression_vae_module
+
+    def run_compression_module(self, latents_with_noise, freqs_cis, noise_pred, latent_noise, sim_threshold=0.5):
+        """
+        VGDFR Compression Module
+        """
         sigma = self.scheduler.sigmas[self.scheduler.step_index]
         T = latents_with_noise.shape[2]
         latents_without_noise = latents_with_noise - noise_pred * sigma
@@ -321,6 +373,8 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         print("Do Latent Merge")
         vae_dtype = PRECISION_TO_TYPE[self.args.vae_precision]
         vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
+        
+        # One-step Denoise
         if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
             latents_without_noise = (
                 latents_without_noise / self.vae.config.scaling_factor + self.vae.config.shift_factor
@@ -328,12 +382,12 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         else:
             latents_without_noise = latents_without_noise / self.vae.config.scaling_factor
         with torch.autocast(device_type="cuda", dtype=vae_dtype, enabled=vae_autocast_enabled):
-            self.compression_module.enable_tiling()
-            # image = self.vae.decode(
-            image = self.compression_module.decode(latents_without_noise, return_dict=False, generator=None)[0]
-            # torch.cuda.synchronize()
+            
+            # Compression Decode
+            self.compression_vae_module.enable_tiling()
+            image = self.compression_vae_module.decode(latents_without_noise, return_dict=False, generator=None)[0]
 
-            # need (N,C,H,W)
+            # Dynamic Frame Rate Schedule
             image_reshape = (image[0].transpose(0, 1) / 2 + 0.5).clamp(0, 1)
             print(image_reshape.max(), image_reshape.min())
 
@@ -343,15 +397,15 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
 
             print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
-            merge8_inds = []
-            merge16_inds = []
+            merge2x4_inds = []
+            merge4x4_inds = []
             latent_remain_inds = [_ for _ in range(len(image_reshape) // 4 + 1)]
             video_remain_inds = [_ for _ in range(len(image_reshape))]
             merge_plan = []
             ind = 1
-            while ind < len(image_reshape) - 8:
+            while ind < len(image_reshape) - 8 - 1: # gurantee the last frame cannot be merged 
                 # 16 merge
-                if ind < len(image_reshape) - 16:
+                if ind < len(image_reshape) - 16 -1:
                     min_ssim = min(
                         [
                             min(
@@ -366,7 +420,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                         ]
                     )
                     if min_ssim > sim_threshold:
-                        merge16_inds.append(ind)
+                        merge4x4_inds.append(ind)
                         for offset in [0, 4, 8, 12]:
                             merge_plan.append([ind + offset, ind + offset + 1, ind + offset + 2, ind + offset + 3])
                             video_remain_inds.remove(ind + offset + 1)
@@ -379,38 +433,38 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                 # 8 merge
                 min_ssim = min([ssim_results1[ind + offset] for offset in [0, 2, 4, 6]])
                 if min_ssim > sim_threshold:
-                    merge8_inds.append(ind)
+                    merge2x4_inds.append(ind)
                     for offset in [0, 2, 4, 6]:
                         merge_plan.append([ind + offset, ind + offset + 1])
                         video_remain_inds.remove(ind + offset + 1)
                     for offset in [4]:
                         latent_remain_inds.remove(1 + (ind + offset) // 4)
                 ind += 8
-            print(f"merge plan: \nmerge8_inds:{merge8_inds},\nmerge16_inds:{merge16_inds}")
-            self.vae.decoder.up_blocks[3].merge8_inds = merge8_inds
-            self.vae.decoder.up_blocks[3].merge16_inds = merge16_inds
-            self.vae.decoder.up_blocks[3].video_remain_inds = video_remain_inds
-            self.vae.decoder.up_blocks[3].original_T = len(image_reshape)
+            print(f"merge plan: \nmerge2x4_inds:{merge2x4_inds},\nmerge4x4_inds:{merge4x4_inds}")
+            self.compression_info={
+                "merge2x4_inds": merge2x4_inds,
+                "merge4x4_inds": merge4x4_inds,
+                "video_remain_inds": video_remain_inds,
+                "original_T": len(image_reshape),
+            }
 
-            # Do merge
             print(image.shape, merge_plan)
             for inds in merge_plan:
                 image[:, :, inds[0]] = sum([image[:, :, _] for _ in inds]) / len(inds)
             image = image[:, :, video_remain_inds]
-            # image=image[:,:,:int(image.size(2)//2*2):2]
-            merged_latents = self.compression_module.encode(image)[0].mode()
-            # merged_latents = self.vae.encode(image)[0].mode()
-            # torch.cuda.synchronize()
+
+            # Compression Encode
+            merged_latents = self.compression_vae_module.encode(image)[0].mode()
 
         if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
             merged_latents = (merged_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
         else:
             merged_latents = merged_latents * self.vae.config.scaling_factor
 
+        # Renoise
         renoised_latents = latent_noise[:, :, latent_remain_inds] * sigma + (1 - sigma) * merged_latents
-        # new_noise=torch.randn_like(latent_noise)
-        # renoised_latents=new_noise[:,:,:merged_latents.shape[2]] * sigma + (1-sigma)*merged_latents
 
+        # Generate DyRoPE
         _, _, To, H, W = merged_latents.shape
         n_tokens = To * H // 2 * W // 2
         local_freqs_cis = (freqs_cis[0][:n_tokens], freqs_cis[1][:n_tokens])
@@ -418,115 +472,6 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
             freqs_cis[0].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
             freqs_cis[1].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
         )
-        # new_freqs_cis=self.saved_down_rotary
-        return renoised_latents, local_freqs_cis, global_freqs_cis
-
-    def compression_module_forward(self, latents_with_noise, freqs_cis, noise_pred, latent_noise, sim_threshold=0.5):
-        sigma = self.scheduler.sigmas[self.scheduler.step_index]
-        T = latents_with_noise.shape[2]
-        latents_without_noise = latents_with_noise - noise_pred * sigma
-
-        print("Do Latent Merge")
-        vae_dtype = PRECISION_TO_TYPE[self.args.vae_precision]
-        vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
-        if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
-            latents_without_noise = (
-                latents_without_noise / self.vae.config.scaling_factor + self.vae.config.shift_factor
-            )
-        else:
-            latents_without_noise = latents_without_noise / self.vae.config.scaling_factor
-        with torch.autocast(device_type="cuda", dtype=vae_dtype, enabled=vae_autocast_enabled):
-            self.compression_module.enable_tiling()
-            # image = self.vae.decode(
-            image = self.compression_module.decode(latents_without_noise, return_dict=False, generator=None)[0]
-            # torch.cuda.synchronize()
-
-            # need (N,C,H,W)
-            image_reshape = (image[0].transpose(0, 1) / 2 + 0.5).clamp(0, 1)
-            print(image_reshape.max(), image_reshape.min())
-
-            ssim_results3 = calc_ssim_func(image_reshape[:-3], image_reshape[3:], size_average=False, data_range=1.0)
-            ssim_results2 = calc_ssim_func(image_reshape[:-2], image_reshape[2:], size_average=False, data_range=1.0)
-            ssim_results1 = calc_ssim_func(image_reshape[:-1], image_reshape[1:], size_average=False, data_range=1.0)
-
-            print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
-
-            merge8_inds = []
-            merge16_inds = []
-            latent_remain_inds = [_ for _ in range(len(image_reshape) // 4 + 1)]
-            video_remain_inds = [_ for _ in range(len(image_reshape))]
-            merge_plan = []
-            ind = 1
-            while ind < len(image_reshape) - 8:
-                # 16 merge
-                if ind < len(image_reshape) - 16:
-                    min_ssim = min(
-                        [
-                            min(
-                                ssim_results1[ind + offset],
-                                ssim_results2[ind + offset],
-                                ssim_results3[ind + offset],
-                                ssim_results1[ind + offset + 1],
-                                ssim_results2[ind + offset + 1],
-                                ssim_results1[ind + offset + 2],
-                            )
-                            for offset in [0, 4, 8, 12]
-                        ]
-                    )
-                    if min_ssim > sim_threshold:
-                        merge16_inds.append(ind)
-                        for offset in [0, 4, 8, 12]:
-                            merge_plan.append([ind + offset, ind + offset + 1, ind + offset + 2, ind + offset + 3])
-                            video_remain_inds.remove(ind + offset + 1)
-                            video_remain_inds.remove(ind + offset + 2)
-                            video_remain_inds.remove(ind + offset + 3)
-                        for offset in [4, 8, 12]:
-                            latent_remain_inds.remove(1 + (ind + offset) // 4)
-                        ind += 16
-                        continue
-                # 8 merge
-                min_ssim = min([ssim_results1[ind + offset] for offset in [0, 2, 4, 6]])
-                if min_ssim > sim_threshold:
-                    merge8_inds.append(ind)
-                    for offset in [0, 2, 4, 6]:
-                        merge_plan.append([ind + offset, ind + offset + 1])
-                        video_remain_inds.remove(ind + offset + 1)
-                    for offset in [4]:
-                        latent_remain_inds.remove(1 + (ind + offset) // 4)
-                ind += 8
-            print(f"merge plan: \nmerge8_inds:{merge8_inds},\nmerge16_inds:{merge16_inds}")
-            self.vae.decoder.up_blocks[3].merge8_inds = merge8_inds
-            self.vae.decoder.up_blocks[3].merge16_inds = merge16_inds
-            self.vae.decoder.up_blocks[3].video_remain_inds = video_remain_inds
-            self.vae.decoder.up_blocks[3].original_T = len(image_reshape)
-
-            # Do merge
-            print(image.shape, merge_plan)
-            for inds in merge_plan:
-                image[:, :, inds[0]] = sum([image[:, :, _] for _ in inds]) / len(inds)
-            image = image[:, :, video_remain_inds]
-            # image=image[:,:,:int(image.size(2)//2*2):2]
-            merged_latents = self.compression_module.encode(image)[0].mode()
-            # merged_latents = self.vae.encode(image)[0].mode()
-            # torch.cuda.synchronize()
-
-        if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
-            merged_latents = (merged_latents - self.vae.config.shift_factor) * self.vae.config.scaling_factor
-        else:
-            merged_latents = merged_latents * self.vae.config.scaling_factor
-
-        renoised_latents = latent_noise[:, :, latent_remain_inds] * sigma + (1 - sigma) * merged_latents
-        # new_noise=torch.randn_like(latent_noise)
-        # renoised_latents=new_noise[:,:,:merged_latents.shape[2]] * sigma + (1-sigma)*merged_latents
-
-        _, _, To, H, W = merged_latents.shape
-        n_tokens = To * H // 2 * W // 2
-        local_freqs_cis = (freqs_cis[0][:n_tokens], freqs_cis[1][:n_tokens])
-        global_freqs_cis = (
-            freqs_cis[0].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
-            freqs_cis[1].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
-        )
-        # new_freqs_cis=self.saved_down_rotary
         return renoised_latents, local_freqs_cis, global_freqs_cis
 
     @torch.no_grad()
@@ -792,7 +737,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                 noise_pred, t, latents, **extra_step_kwargs, return_dict=False
             )[0]
         print(f"compression_module_t_k={compression_module_t_k},compression_module_threshold={compression_module_threshold}")
-        latents, local_freqs_cis, global_freqs_cis = self.compression_module_forward(
+        latents, local_freqs_cis, global_freqs_cis = self.run_compression_module(
             latents, freqs_cis, noise_pred,latent_noise, sim_threshold=compression_module_threshold
         )
 
@@ -901,9 +846,19 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         else:
             image = latents
 
-        image = (image / 2 + 0.5).clamp(0, 1)
+        image = (image / 2 + 0.5).clamp(0, 1).float()
+
+        # Do Frame Interpolate
+        image=self.frame_interpolator.vgdfr_frame_interpolate(
+            image,
+            self.compression_info["merge2x4_inds"],
+            self.compression_info["merge4x4_inds"],
+            self.compression_info["video_remain_inds"],
+            self.compression_info["original_T"],
+        )
+
         # we always cast to float32 as this does not cause significant overhead and is compatible with bfloa16
-        image = image.cpu().float()
+        image = image.cpu()
 
         # Offload all models
         self.maybe_free_model_hooks()
