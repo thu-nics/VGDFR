@@ -1,5 +1,5 @@
 # VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate
-This is the official implementation of the paper "VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate".
+This is the official implementation of the paper [VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate](https://arxiv.org/abs/2504.12259).
 
 <!-- ## Result Show -->
 
@@ -29,12 +29,14 @@ python -m pip install git+https://github.com/Dao-AILab/flash-attention.git@v2.7.
 # 6. Install xDiT for parallel inference (It is recommended to use torch 2.4.0 and flash-attn 2.6.3)
 python -m pip install xfuser==0.4.3
 
+# 7. Download flownet.pkl to data directory
+wget https://github.com/thu-nics/VGDFR/releases/download/v0.1/flownet.pkl -P data/flownet.pkl
 
 ```
 
 ## Generation with VGDFR
 
-```bash
+```python
 from VGDFR.hunyuan_vgdfr import VGDFRHunyuanVideoSampler
 hunyuan_video_sampler = VGDFRHunyuanVideoSampler.from_pretrained(models_root_path, args=args)
 hunyuan_video_sampler.pipeline.before_compression_steps = 5
