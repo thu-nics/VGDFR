@@ -6,7 +6,6 @@ __pycache__/
 tmp
 results
 ckpts
-hyvideo
 ckpts2
 *.png
 *.txt

@@ -11,6 +11,7 @@ from hyvideo.modules.models import HYVideoDiffusionTransformer, get_cu_seqlens
 from VGDFR.frame_interpolate import RIFEInterpolator
 from hyvideo.vae import load_vae
 
+
 def mod_rope_forward(
     self,
     x: torch.Tensor,
@@ -121,7 +122,7 @@ def mod_rope_forward(
     return img
 
 
-class DyLatentMergeModRoPEGenSampler(HunyuanVideoSampler):
+class VGDFRHunyuanVideoSampler(HunyuanVideoSampler):
     def load_diffusion_pipeline(
         self,
         args,
@@ -145,7 +146,7 @@ class DyLatentMergeModRoPEGenSampler(HunyuanVideoSampler):
             else:
                 raise ValueError(f"Invalid denoise type {args.denoise_type}")
 
-        pipeline = DyLatentMergeModRoPEGenPipeline(
+        pipeline = VGDFRHunyuanVideoPipeline(
             vae=vae,
             text_encoder=text_encoder,
             text_encoder_2=text_encoder_2,
@@ -161,159 +162,8 @@ class DyLatentMergeModRoPEGenSampler(HunyuanVideoSampler):
 
         return pipeline
 
-    @torch.no_grad()
-    def prepare_denoise_data(
-        self,
-        prompt,
-        height=192,
-        width=336,
-        video_length=129,
-        seed=None,
-        negative_prompt=None,
-        infer_steps=50,
-        guidance_scale=6,
-        flow_shift=5.0,
-        embedded_guidance_scale=None,
-        batch_size=1,
-        num_videos_per_prompt=1,
-        **kwargs,
-    ):
-        """
-        Predict the image/video from the given text.
 
-        Args:
-            prompt (str or List[str]): The input text.
-            kwargs:
-                height (int): The height of the output video. Default is 192.
-                width (int): The width of the output video. Default is 336.
-                video_length (int): The frame number of the output video. Default is 129.
-                seed (int or List[str]): The random seed for the generation. Default is a random integer.
-                negative_prompt (str or List[str]): The negative text prompt. Default is an empty string.
-                guidance_scale (float): The guidance scale for the generation. Default is 6.0.
-                num_images_per_prompt (int): The number of images per prompt. Default is 1.
-                infer_steps (int): The number of inference steps. Default is 100.
-        """
-        out_dict = dict()
-
-        # ========================================================================
-        # Arguments: seed
-        # ========================================================================
-        if isinstance(seed, torch.Tensor):
-            seed = seed.tolist()
-        if seed is None:
-            seeds = [random.randint(0, 1_000_000) for _ in range(batch_size * num_videos_per_prompt)]
-        elif isinstance(seed, int):
-            seeds = [seed + i for _ in range(batch_size) for i in range(num_videos_per_prompt)]
-        elif isinstance(seed, (list, tuple)):
-            if len(seed) == batch_size:
-                seeds = [int(seed[i]) + j for i in range(batch_size) for j in range(num_videos_per_prompt)]
-            elif len(seed) == batch_size * num_videos_per_prompt:
-                seeds = [int(s) for s in seed]
-            else:
-                raise ValueError(
-                    f"Length of seed must be equal to number of prompt(batch_size) or "
-                    f"batch_size * num_videos_per_prompt ({batch_size} * {num_videos_per_prompt}), got {seed}."
-                )
-        else:
-            raise ValueError(f"Seed must be an integer, a list of integers, or None, got {seed}.")
-        generator = [torch.Generator(self.device).manual_seed(seed) for seed in seeds]
-        out_dict["seeds"] = seeds
-
-        # ========================================================================
-        # Arguments: target_width, target_height, target_video_length
-        # ========================================================================
-        if width <= 0 or height <= 0 or video_length <= 0:
-            raise ValueError(
-                f"`height` and `width` and `video_length` must be positive integers, got height={height}, width={width}, video_length={video_length}"
-            )
-        if (video_length - 1) % 4 != 0:
-            raise ValueError(f"`video_length-1` must be a multiple of 4, got {video_length}")
-
-        logger.info(f"Input (height, width, video_length) = ({height}, {width}, {video_length})")
-
-        target_height = align_to(height, 16)
-        target_width = align_to(width, 16)
-        target_video_length = video_length
-
-        out_dict["size"] = (target_height, target_width, target_video_length)
-
-        # ========================================================================
-        # Arguments: prompt, new_prompt, negative_prompt
-        # ========================================================================
-        if not isinstance(prompt, str):
-            raise TypeError(f"`prompt` must be a string, but got {type(prompt)}")
-        prompt = [prompt.strip()]
-
-        # negative prompt
-        if negative_prompt is None or negative_prompt == "":
-            negative_prompt = self.default_negative_prompt
-        if not isinstance(negative_prompt, str):
-            raise TypeError(f"`negative_prompt` must be a string, but got {type(negative_prompt)}")
-        negative_prompt = [negative_prompt.strip()]
-
-        # ========================================================================
-        # Scheduler
-        # ========================================================================
-        scheduler = FlowMatchDiscreteScheduler(
-            shift=flow_shift, reverse=self.args.flow_reverse, solver=self.args.flow_solver
-        )
-        self.pipeline.scheduler = scheduler
-
-        # ========================================================================
-        # Build Rope freqs
-        # ========================================================================
-        freqs_cos, freqs_sin = self.get_rotary_pos_embed(target_video_length, target_height, target_width)
-        self.pipeline.saved_down_rotary = self.get_rotary_pos_embed(
-            target_video_length // 2, target_height, target_width
-        )
-
-        n_tokens = freqs_cos.shape[0]
-
-        # ========================================================================
-        # Print infer args
-        # ========================================================================
-        debug_str = f"""
-                        height: {target_height}
-                         width: {target_width}
-                  video_length: {target_video_length}
-                        prompt: {prompt}
-                    neg_prompt: {negative_prompt}
-                          seed: {seed}
-                   infer_steps: {infer_steps}
-         num_videos_per_prompt: {num_videos_per_prompt}
-                guidance_scale: {guidance_scale}
-                      n_tokens: {n_tokens}
-                    flow_shift: {flow_shift}
-       embedded_guidance_scale: {embedded_guidance_scale}"""
-        logger.debug(debug_str)
-
-        # ========================================================================
-        # Pipeline inference
-        # ========================================================================
-        start_time = time.time()
-        args_tuple = self.pipeline.prepare_denoise_data(
-            prompt=prompt,
-            height=target_height,
-            width=target_width,
-            video_length=target_video_length,
-            num_inference_steps=infer_steps,
-            guidance_scale=guidance_scale,
-            negative_prompt=negative_prompt,
-            num_videos_per_prompt=num_videos_per_prompt,
-            generator=generator,
-            output_type="pil",
-            freqs_cis=(freqs_cos, freqs_sin),
-            n_tokens=n_tokens,
-            embedded_guidance_scale=embedded_guidance_scale,
-            data_type="video" if target_video_length > 1 else "image",
-            is_progress_bar=True,
-            vae_ver=self.args.vae,
-            enable_tiling=self.args.vae_tiling,
-        )
-        return args_tuple, generator
-
-
-class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
+class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
     def __init__(
         self,
         vae: AutoencoderKL,
@@ -323,46 +173,49 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         text_encoder_2: Optional[TextEncoder] = None,
         progress_bar_config: Dict[str, Any] = None,
         args=None,
+        before_compression_steps: int = 5,
+        similarity_threshold=0.6,
     ):
-        super().__init__(
-            vae,text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args
-        )
+        super().__init__(vae, text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args)
         self.frame_interpolator = RIFEInterpolator()
         # Init compression module
-        self.compression_vae_module=self.init_compression_vae_module()
-        self.compression_info=None
+        self.compression_vae_module = self.init_compression_vae_module()
+        self.compression_info = None
+        self.before_compression_steps = before_compression_steps
+        self.similarity_threshold = similarity_threshold
+        self.denoise_latency = None
 
     def init_compression_vae_module(self):
         compression_vae_module, _, s_ratio, t_ratio = load_vae(
-            vae_type="884-16c-hy",         
+            vae_type="884-16c-hy",
             vae_precision="fp16",
             logger=logger,
             vae_path="ckpts/hunyuan-video-t2v-720p/vae",
             device="cuda",
         )
-        compression_vae_module=compression_vae_module.eval()
+        compression_vae_module = compression_vae_module.eval()
         compression_vae_module.enable_tiling()
-        for name,module in compression_vae_module.decoder.named_modules():
-            if isinstance(module,UpsampleCausal3D):
+        for name, module in compression_vae_module.decoder.named_modules():
+            if isinstance(module, UpsampleCausal3D):
                 # if module.upsample_factor[1]>1 and "_blocks.2" not in name:
-                if module.upsample_factor[1]>1 and "_blocks.0" in name:
-                    module._raw_upsample_factor=module.upsample_factor
-                    module.upsample_factor=(module.upsample_factor[0],1,1)
+                if module.upsample_factor[1] > 1 and "_blocks.0" in name:
+                    module._raw_upsample_factor = module.upsample_factor
+                    module.upsample_factor = (module.upsample_factor[0], 1, 1)
                     print(f"UpsampleCausal3D {name}: convert {module._raw_upsample_factor} to {module.upsample_factor}")
-                
-        for name,module in compression_vae_module.encoder.named_modules():
-            if isinstance(module,CausalConv3d):
-                module=module.conv
+
+        for name, module in compression_vae_module.encoder.named_modules():
+            if isinstance(module, CausalConv3d):
+                module = module.conv
                 # if module.stride[1]==2 and "_blocks.0" not in name:
-                if module.stride[1]==2 and "_blocks.2" in name:
-                    module._raw_stride=module.stride
-                    module.stride=(module.stride[0],1,1)
+                if module.stride[1] == 2 and "_blocks.2" in name:
+                    module._raw_stride = module.stride
+                    module.stride = (module.stride[0], 1, 1)
                     print(f"Downsample Conv3d {name}: convert {module._raw_stride} to {module.stride}")
         # print(compression_module.tile_latent_min_size)
-        compression_vae_module.tile_latent_min_size=64
+        compression_vae_module.tile_latent_min_size = 64
         return compression_vae_module
 
-    def run_compression_module(self, latents_with_noise, freqs_cis, noise_pred, latent_noise, sim_threshold=0.5):
+    def run_compression_module(self, latents_with_noise, freqs_cis, noise_pred, latent_noise):
         """
         VGDFR Compression Module
         """
@@ -370,10 +223,12 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         T = latents_with_noise.shape[2]
         latents_without_noise = latents_with_noise - noise_pred * sigma
 
-        print("Do Latent Merge")
+        print(
+            f"Run VGDFR Compression Module with similarity theta={self.similarity_threshold} and k={self.before_compression_steps}"
+        )
         vae_dtype = PRECISION_TO_TYPE[self.args.vae_precision]
         vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
-        
+
         # One-step Denoise
         if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
             latents_without_noise = (
@@ -382,20 +237,20 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         else:
             latents_without_noise = latents_without_noise / self.vae.config.scaling_factor
         with torch.autocast(device_type="cuda", dtype=vae_dtype, enabled=vae_autocast_enabled):
-            
+
             # Compression Decode
             self.compression_vae_module.enable_tiling()
             image = self.compression_vae_module.decode(latents_without_noise, return_dict=False, generator=None)[0]
 
             # Dynamic Frame Rate Schedule
             image_reshape = (image[0].transpose(0, 1) / 2 + 0.5).clamp(0, 1)
-            print(image_reshape.max(), image_reshape.min())
+            # print(image_reshape.max(), image_reshape.min())
 
             ssim_results3 = calc_ssim_func(image_reshape[:-3], image_reshape[3:], size_average=False, data_range=1.0)
             ssim_results2 = calc_ssim_func(image_reshape[:-2], image_reshape[2:], size_average=False, data_range=1.0)
             ssim_results1 = calc_ssim_func(image_reshape[:-1], image_reshape[1:], size_average=False, data_range=1.0)
 
-            print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
+            # print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
             merge2x4_inds = []
             merge4x4_inds = []
@@ -403,9 +258,9 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
             video_remain_inds = [_ for _ in range(len(image_reshape))]
             merge_plan = []
             ind = 1
-            while ind < len(image_reshape) - 8 - 1: # gurantee the last frame cannot be merged 
+            while ind < len(image_reshape) - 8 - 1:  # gurantee the last frame cannot be merged
                 # 16 merge
-                if ind < len(image_reshape) - 16 -1:
+                if ind < len(image_reshape) - 16 - 1:
                     min_ssim = min(
                         [
                             min(
@@ -419,7 +274,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                             for offset in [0, 4, 8, 12]
                         ]
                     )
-                    if min_ssim > sim_threshold:
+                    if min_ssim > self.similarity_threshold:
                         merge4x4_inds.append(ind)
                         for offset in [0, 4, 8, 12]:
                             merge_plan.append([ind + offset, ind + offset + 1, ind + offset + 2, ind + offset + 3])
@@ -432,7 +287,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                         continue
                 # 8 merge
                 min_ssim = min([ssim_results1[ind + offset] for offset in [0, 2, 4, 6]])
-                if min_ssim > sim_threshold:
+                if min_ssim > self.similarity_threshold:
                     merge2x4_inds.append(ind)
                     for offset in [0, 2, 4, 6]:
                         merge_plan.append([ind + offset, ind + offset + 1])
@@ -441,14 +296,14 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                         latent_remain_inds.remove(1 + (ind + offset) // 4)
                 ind += 8
             print(f"merge plan: \nmerge2x4_inds:{merge2x4_inds},\nmerge4x4_inds:{merge4x4_inds}")
-            self.compression_info={
+            self.compression_info = {
                 "merge2x4_inds": merge2x4_inds,
                 "merge4x4_inds": merge4x4_inds,
                 "video_remain_inds": video_remain_inds,
                 "original_T": len(image_reshape),
             }
 
-            print(image.shape, merge_plan)
+            # print(image.shape, merge_plan)
             for inds in merge_plan:
                 image[:, :, inds[0]] = sum([image[:, :, _] for _ in inds]) / len(inds)
             image = image[:, :, video_remain_inds]
@@ -513,8 +368,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
-        compression_module_t_k: int = 4,
-        compression_module_threshold: float = 0.7,
+        similarity_threshold: float = 0.7,
         global_freq_layer_ids: List[int] = [4, 19, 23, 31, 35, 36, 37, 40],
         **kwargs,
     ):
@@ -681,12 +535,14 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
-        
+
         # 7.1 Before Compression Inference to get frame rate
-        assert compression_module_t_k<num_inference_steps
+        assert self.before_compression_steps < num_inference_steps
         latent_noise = latents
+        torch.cuda.synchronize()
+        denoise_st = time.time()
         for i, t in enumerate(timesteps):
-            if i>=compression_module_t_k:
+            if i >= self.before_compression_steps:
                 break
             latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -733,18 +589,15 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                 )
 
             # compute the previous noisy sample x_t -> x_t-1
-            latents = self.scheduler.step(
-                noise_pred, t, latents, **extra_step_kwargs, return_dict=False
-            )[0]
-        print(f"compression_module_t_k={compression_module_t_k},compression_module_threshold={compression_module_threshold}")
+            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
         latents, local_freqs_cis, global_freqs_cis = self.run_compression_module(
-            latents, freqs_cis, noise_pred,latent_noise, sim_threshold=compression_module_threshold
+            latents, freqs_cis, noise_pred, latent_noise
         )
 
         # if is_progress_bar:
-        with self.progress_bar(total=num_inference_steps-compression_module_t_k) as progress_bar:
+        with self.progress_bar(total=num_inference_steps - self.before_compression_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-                if i<compression_module_t_k:
+                if i < self.before_compression_steps:
                     continue
                 if self.interrupt:
                     continue
@@ -768,7 +621,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                 # predict the noise residual
                 with torch.autocast(device_type="cuda", dtype=target_dtype, enabled=autocast_enabled):
                     noise_pred = mod_rope_forward(
-                        self.transformer,  
+                        self.transformer,
                         latent_model_input,  # [2, 16, 33, 24, 42]
                         t_expand,  # [2]
                         text_states=prompt_embeds,  # [2, 256, 4096]
@@ -814,6 +667,9 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
                     if callback is not None and i % callback_steps == 0:
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
+        torch.cuda.synchronize()
+        denoise_ed = time.time()
+        self.denoise_latency = denoise_ed - denoise_st
 
         if not output_type == "latent":
             expand_temporal_dim = False
@@ -849,7 +705,7 @@ class DyLatentMergeModRoPEGenPipeline(HunyuanVideoPipeline):
         image = (image / 2 + 0.5).clamp(0, 1).float()
 
         # Do Frame Interpolate
-        image=self.frame_interpolator.vgdfr_frame_interpolate(
+        image = self.frame_interpolator.vgdfr_frame_interpolate(
             image,
             self.compression_info["merge2x4_inds"],
             self.compression_info["merge4x4_inds"],
