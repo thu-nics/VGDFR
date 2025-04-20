@@ -252,53 +252,42 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
 
             print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
-            merge2x4_inds = []
-            merge4x4_inds = []
-            latent_remain_inds = [_ for _ in range(len(image_reshape) // 4 + 1)]
+            merge2_inds = []
+            merge4_inds = []
+            latent_remain_inds = [_ for _ in range(latents_with_noise.shape[2])]
             video_remain_inds = [_ for _ in range(len(image_reshape))]
             merge_plan = []
             ind = 1
-            while ind < len(image_reshape) - 8 - 1:  # gurantee the last frame cannot be merged
-                # 16 merge
-                if ind < len(image_reshape) - 16 - 1:
+            while ind < len(image_reshape) - 2 - 1:  # gurantee the last frame cannot be merged
+                # 4 merge
+                if ind < len(image_reshape) - 4 - 1:
                     min_ssim = min(
-                        [
-                            min(
-                                ssim_results1[ind + offset],
-                                ssim_results2[ind + offset],
-                                ssim_results3[ind + offset],
-                                ssim_results1[ind + offset + 1],
-                                ssim_results2[ind + offset + 1],
-                                ssim_results1[ind + offset + 2],
-                            )
-                            for offset in [0, 4, 8, 12]
-                        ]
+                        ssim_results1[ind],
+                        ssim_results2[ind],
+                        ssim_results3[ind],
+                        ssim_results1[ind + 1],
+                        ssim_results2[ind + 1],
+                        ssim_results1[ind + 2],
                     )
                     if min_ssim > self.similarity_threshold:
-                        merge4x4_inds.append(ind)
-                        for offset in [0, 4, 8, 12]:
-                            merge_plan.append([ind + offset, ind + offset + 1, ind + offset + 2, ind + offset + 3])
-                            video_remain_inds.remove(ind + offset + 1)
-                            video_remain_inds.remove(ind + offset + 2)
-                            video_remain_inds.remove(ind + offset + 3)
-                        for offset in [4, 8, 12]:
-                            latent_remain_inds.remove(1 + (ind + offset) // 4)
-                        ind += 16
+                        merge4_inds.append(ind)
+                        merge_plan.append([ind, ind + 1, ind + 2, ind + 3])
+                        video_remain_inds.remove(ind + 1)
+                        video_remain_inds.remove(ind + 2)
+                        video_remain_inds.remove(ind + 3)
+                        ind += 4
                         continue
-                # 8 merge
-                min_ssim = min([ssim_results1[ind + offset] for offset in [0, 2, 4, 6]])
+                # 2 merge
+                min_ssim = ssim_results1[ind]
                 if min_ssim > self.similarity_threshold:
-                    merge2x4_inds.append(ind)
-                    for offset in [0, 2, 4, 6]:
-                        merge_plan.append([ind + offset, ind + offset + 1])
-                        video_remain_inds.remove(ind + offset + 1)
-                    for offset in [4]:
-                        latent_remain_inds.remove(1 + (ind + offset) // 4)
-                ind += 8
-            print(f"merge plan: \nmerge2x4_inds:{merge2x4_inds},\nmerge4x4_inds:{merge4x4_inds}")
+                    merge2_inds.append(ind)
+                    merge_plan.append([ind, ind + 1])
+                    video_remain_inds.remove(ind + 1)
+                ind += 2
+            print(f"merge plan: \nmerge2_inds:{merge2_inds},\nmerge4_inds:{merge4_inds}")
             self.compression_info = {
-                "merge2x4_inds": merge2x4_inds,
-                "merge4x4_inds": merge4x4_inds,
+                "merge2_inds": merge2_inds,
+                "merge4_inds": merge4_inds,
                 "video_remain_inds": video_remain_inds,
                 "original_T": len(image_reshape),
             }
@@ -316,8 +305,11 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         else:
             merged_latents = merged_latents * self.vae.config.scaling_factor
 
+        new_latent_T = merged_latents.shape[2]
+
         # Renoise
-        renoised_latents = latent_noise[:, :, latent_remain_inds] * sigma + (1 - sigma) * merged_latents
+        # renoised_latents = latent_noise[:, :, latent_remain_inds] * sigma + (1 - sigma) * merged_latents
+        renoised_latents = latent_noise[:, :, :new_latent_T] * sigma + (1 - sigma) * merged_latents
 
         # Generate DyRoPE
         _, _, To, H, W = merged_latents.shape
@@ -327,6 +319,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
             freqs_cis[0].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
             freqs_cis[1].view(T, H // 2, W // 2, -1)[latent_remain_inds].flatten(0, 2),
         )
+        global_freqs_cis = local_freqs_cis
         return renoised_latents, local_freqs_cis, global_freqs_cis
 
     @torch.no_grad()
@@ -707,8 +700,8 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         # Do Frame Interpolate
         image = self.frame_interpolator.vgdfr_frame_interpolate(
             image,
-            self.compression_info["merge2x4_inds"],
-            self.compression_info["merge4x4_inds"],
+            self.compression_info["merge2_inds"],
+            self.compression_info["merge4_inds"],
             self.compression_info["video_remain_inds"],
             self.compression_info["original_T"],
         )

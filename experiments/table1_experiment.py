@@ -82,4 +82,4 @@ for prompt in all_prompts:
                 )
                 denoise_latency = hunyuan_video_sampler.pipeline.denoise_latency
                 with open(f"{save_folder}/latency.txt", "a+") as f:
-                    f.write(f"{denoise_latency}")
+                    f.write(f"{denoise_latency}\n")
