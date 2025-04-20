@@ -10,6 +10,7 @@ from pytorch_msssim import ssim as calc_ssim_func
 from hyvideo.modules.models import HYVideoDiffusionTransformer, get_cu_seqlens
 from VGDFR.frame_interpolate import RIFEInterpolator
 from hyvideo.vae import load_vae
+from VGDFR.frame_rate_schedule import similarity_threhshold_schedule, compress_ratio_schedule
 
 
 def mod_rope_forward(
@@ -174,7 +175,9 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         progress_bar_config: Dict[str, Any] = None,
         args=None,
         before_compression_steps: int = 5,
-        similarity_threshold=0.6,
+        schedule_mode: str = "compress_ratio",
+        similarity_threshold=0.75,
+        compress_ratio=0.75,
     ):
         super().__init__(vae, text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args)
         self.frame_interpolator = RIFEInterpolator()
@@ -183,7 +186,9 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         self.compression_info = None
         self.before_compression_steps = before_compression_steps
         self.similarity_threshold = similarity_threshold
+        self.compress_ratio = compress_ratio
         self.denoise_latency = None
+        self.schedule_mode = schedule_mode
 
     def init_compression_vae_module(self):
         compression_vae_module, _, s_ratio, t_ratio = load_vae(
@@ -223,9 +228,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         T = latents_with_noise.shape[2]
         latents_without_noise = latents_with_noise - noise_pred * sigma
 
-        print(
-            f"Run VGDFR Compression Module with similarity theta={self.similarity_threshold} and k={self.before_compression_steps}"
-        )
+        print(f"Run VGDFR Compression Module...")
         vae_dtype = PRECISION_TO_TYPE[self.args.vae_precision]
         vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
 
@@ -250,51 +253,26 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
             ssim_results2 = calc_ssim_func(image_reshape[:-2], image_reshape[2:], size_average=False, data_range=1.0)
             ssim_results1 = calc_ssim_func(image_reshape[:-1], image_reshape[1:], size_average=False, data_range=1.0)
 
-            print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
+            # print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
-            merge2x4_inds = []
-            merge4x4_inds = []
-            latent_remain_inds = [_ for _ in range(len(image_reshape) // 4 + 1)]
-            video_remain_inds = [_ for _ in range(len(image_reshape))]
-            merge_plan = []
-            ind = 1
-            while ind < len(image_reshape) - 8 - 1:  # gurantee the last frame cannot be merged
-                # 16 merge
-                if ind < len(image_reshape) - 16 - 1:
-                    min_ssim = min(
-                        [
-                            min(
-                                ssim_results1[ind + offset],
-                                ssim_results2[ind + offset],
-                                ssim_results3[ind + offset],
-                                ssim_results1[ind + offset + 1],
-                                ssim_results2[ind + offset + 1],
-                                ssim_results1[ind + offset + 2],
-                            )
-                            for offset in [0, 4, 8, 12]
-                        ]
+            if self.schedule_mode == "similarity_threshold":
+                print(
+                    f"Using similarity threshold schedule with similarity_threshold={self.similarity_threshold} and k={self.before_compression_steps}"
+                )
+                merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds = (
+                    similarity_threhshold_schedule(
+                        image_reshape, ssim_results1, ssim_results2, ssim_results3, self.similarity_threshold
                     )
-                    if min_ssim > self.similarity_threshold:
-                        merge4x4_inds.append(ind)
-                        for offset in [0, 4, 8, 12]:
-                            merge_plan.append([ind + offset, ind + offset + 1, ind + offset + 2, ind + offset + 3])
-                            video_remain_inds.remove(ind + offset + 1)
-                            video_remain_inds.remove(ind + offset + 2)
-                            video_remain_inds.remove(ind + offset + 3)
-                        for offset in [4, 8, 12]:
-                            latent_remain_inds.remove(1 + (ind + offset) // 4)
-                        ind += 16
-                        continue
-                # 8 merge
-                min_ssim = min([ssim_results1[ind + offset] for offset in [0, 2, 4, 6]])
-                if min_ssim > self.similarity_threshold:
-                    merge2x4_inds.append(ind)
-                    for offset in [0, 2, 4, 6]:
-                        merge_plan.append([ind + offset, ind + offset + 1])
-                        video_remain_inds.remove(ind + offset + 1)
-                    for offset in [4]:
-                        latent_remain_inds.remove(1 + (ind + offset) // 4)
-                ind += 8
+                )
+            else:
+                print(
+                    f"Using compress ratio schedule with compress_ratio={self.compress_ratio} and k={self.before_compression_steps}"
+                )
+                merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds = (
+                    compress_ratio_schedule(
+                        image_reshape, ssim_results1, ssim_results2, ssim_results3, self.compress_ratio
+                    )
+                )
             print(f"merge plan: \nmerge2x4_inds:{merge2x4_inds},\nmerge4x4_inds:{merge4x4_inds}")
             self.compression_info = {
                 "merge2x4_inds": merge2x4_inds,

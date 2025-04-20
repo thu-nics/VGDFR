@@ -44,31 +44,34 @@ python hyvideo/utils/preprocess_text_encoder_tokenizer_utils.py --input_dir ckpt
 
 ## Generation with VGDFR
 
+There is a ipython notebook example `experiments/example.ipynb` in the root directory. You can run it in Jupyter Notebook.
+
+The following is a simple example of how to use VGDFR to generate videos.
 ```python
 from VGDFR.hunyuan_vgdfr import VGDFRHunyuanVideoSampler
 hunyuan_video_sampler = VGDFRHunyuanVideoSampler.from_pretrained(models_root_path, args=args)
+hunyuan_video_sampler.pipeline.schedule_mode = "compress_ratio"
 hunyuan_video_sampler.pipeline.before_compression_steps = 5
-hunyuan_video_sampler.pipeline.similarity_threshold = 0.7
+hunyuan_video_sampler.pipeline.compress_ratio = 0.75
 samples = hunyuan_video_sampler.predict(
-                prompt=prompt,
-                height=height,
-                width=width,
-                video_length=video_length,
-                seed=seed,
-                negative_prompt=args.neg_prompt,
-                infer_steps=args.infer_steps,
-                guidance_scale=args.cfg_scale,
-                num_videos_per_prompt=args.num_videos,
-                flow_shift=args.flow_shift,
-                batch_size=args.batch_size,
-                embedded_guidance_scale=args.embedded_cfg_scale,
-            )["samples"]
+      prompt=prompt,
+      height=height,
+      width=width,
+      video_length=video_length,
+      seed=seed,
+      negative_prompt=args.neg_prompt,
+      infer_steps=args.infer_steps,
+      guidance_scale=args.cfg_scale,
+      num_videos_per_prompt=args.num_videos,
+      flow_shift=args.flow_shift,
+      batch_size=args.batch_size,
+      embedded_guidance_scale=args.embedded_cfg_scale,
+)["samples"]
 ```
 
-Experiment example:
-```bash
-python experiments/table1_experiment.py --threshold 0.9
-```
+We provide two kinds of schedule methods: `compress_ratio` and `similarity_threshold`. The `compress_ratio` method is used to control the token compression ratio of generating, while the `similarity_threshold` method is used to set the minimum similarity threshold to compress adjacent frames.
+
+The `before_compression_steps` parameter is used to set the number of steps before the compression starts.
 
 ## Ackowledgement and Citation
 

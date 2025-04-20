@@ -22,7 +22,7 @@ parser = add_extra_models_args(parser)
 parser = add_denoise_schedule_args(parser)
 parser = add_inference_args(parser)
 parser = add_parallel_args(parser)
-parser.add_argument("--threshold", type=float, default=0.6, help="Threshold theta for VGDFR")
+parser.add_argument("--compress_ratio", type=float, default=0.6, help="Token Compress Ratio for VGDFR")
 
 args = parser.parse_args()
 print(args)
@@ -46,8 +46,8 @@ width, height = 960, 544
 video_length = 97
 
 for prompt in all_prompts:
-    hunyuan_video_sampler.pipeline.similarity_threshold = args.threshold
-    for before_compression_steps in [5, 10, 15]:
+    hunyuan_video_sampler.pipeline.compress_ratio = args.compress_ratio
+    for before_compression_steps in [5, 10]:
         hunyuan_video_sampler.pipeline.before_compression_steps = before_compression_steps
 
         samples = hunyuan_video_sampler.predict(
@@ -72,7 +72,7 @@ for prompt in all_prompts:
                 sample = samples[i].unsqueeze(0)
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%H:%M:%S")
                 file_name = f"raw_seed{seed}_{prompt[:100].replace('/','')}"
-                save_folder = f"{save_path}/vgdfr/th_{args.threshold}_k{before_compression_steps}"
+                save_folder = f"{save_path}/vgdfr/cr_{args.compress_ratio}_k{before_compression_steps}"
                 raw_save_path = f"{save_folder}/{file_name}.mp4"
                 save_videos_grid(sample, raw_save_path, fps=12)
                 torch.save(
