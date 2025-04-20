@@ -244,13 +244,13 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
 
             # Dynamic Frame Rate Schedule
             image_reshape = (image[0].transpose(0, 1) / 2 + 0.5).clamp(0, 1)
-            # print(image_reshape.max(), image_reshape.min())
+            print(image_reshape.max(), image_reshape.min())
 
             ssim_results3 = calc_ssim_func(image_reshape[:-3], image_reshape[3:], size_average=False, data_range=1.0)
             ssim_results2 = calc_ssim_func(image_reshape[:-2], image_reshape[2:], size_average=False, data_range=1.0)
             ssim_results1 = calc_ssim_func(image_reshape[:-1], image_reshape[1:], size_average=False, data_range=1.0)
 
-            # print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
+            print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
             merge2x4_inds = []
             merge4x4_inds = []

@@ -30,7 +30,15 @@ python -m pip install git+https://github.com/Dao-AILab/flash-attention.git@v2.7.
 python -m pip install xfuser==0.4.3
 
 # 7. Download flownet.pkl to data directory
-wget https://github.com/thu-nics/VGDFR/releases/download/v0.1/flownet.pkl -P data/flownet.pkl
+wget https://github.com/thu-nics/VGDFR/releases/download/v0.1/flownet.pkl -P data/
+
+# 8. Download the pre-trained HunyuanVideo model to ckpts directory (ref to https://github.com/Tencent/HunyuanVideo/tree/main/ckpts)
+mkdir -p ckpts
+cd ckpts
+huggingface-cli download xtuner/llava-llama-3-8b-v1_1-transformers --local-dir ./llava-llama-3-8b-v1_1-transformers
+huggingface-cli download openai/clip-vit-large-patch14 --local-dir ./text_encoder_2
+cd ../
+python hyvideo/utils/preprocess_text_encoder_tokenizer_utils.py --input_dir ckpts/llava-llama-3-8b-v1_1-transformers --output_dir ckpts/text_encoder
 
 ```
 
