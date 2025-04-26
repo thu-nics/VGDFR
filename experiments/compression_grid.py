@@ -67,7 +67,7 @@ for prompt in all_prompts:
             for i, sample in enumerate(samples):
                 sample = samples[i].unsqueeze(0)
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%H:%M:%S")
-                file_name = f"raw_seed{seed}_{prompt[:100].replace('/','')}"
+                file_name = f"seed{seed}_{prompt[:100].replace('/','')}"
                 save_folder = f"{save_path}/vgdfr/cr_{args.keep_token_ratio}_k{before_compression_steps}"
                 raw_save_path = f"{save_folder}/{file_name}.mp4"
                 save_videos_grid(sample, raw_save_path, fps=12)
