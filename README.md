@@ -2,7 +2,44 @@
 This is the official implementation of the paper [VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate](https://arxiv.org/abs/2504.12259).
 We exploit the inherent temporal non-uniformity of real-world videos and observe that videos exhibit dynamic information density, with high-motion segments demanding greater detail preservation than static scenes. We propose VGDFR, a training-free approach for Diffusion-based Video Generation with Dynamic Latent Frame Rate. VGDFR adaptively adjusts the number of elements in latent space based on the motion frequency of the latent space content, using fewer tokens for low-frequency segments while preserving detail in high-frequency segments. Experiments show that VGDFR can achieve a speedup up to 3x for video generation.
 
-<!-- ## Result Show -->
+## 🎥 Demo Videos
+
+<table>
+  <thead>
+    <tr>
+      <th></th>
+      <th>A cute girl with red hair. Realistic, Natural lighting, Casual</th>
+      <th>A fluffy dog with a joyful expression bounds through a snowy landscape under a soft blue sky. Snowflakes gently fall as the dog rolls, pounces into snowdrifts, and digs energetically. Occasionally, the dog pauses, wagging its tail and looking back at the camera, inviting you to play. The surroundings feature snow-covered trees, frosted bushes, and a serene winter backdrop. The video is lighthearted, with soft, playful background music enhancing the happy and lively atmosphere. Realistic, Natural lighting</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Raw</td>
+      <td><video src="https://github.com/user-attachments/assets/7d3ff150-37be-4f05-b6cc-46118f8acf03"></video></td>
+      <td><video src="https://github.com/user-attachments/assets/42fcde74-b9be-41f8-ae91-fd4caf84bdcb"></video></td>
+    </tr>
+    <tr>
+      <td>90% tokens</td>
+      <td><video width=10 src="https://github.com/user-attachments/assets/76b2ac90-6d7c-4aeb-af8e-37aa61708adb"></video></td>
+      <td><video width=10 src="https://github.com/user-attachments/assets/55c8f2e4-aa32-4f82-b6c6-6bf1c1630f37"></video></td>
+    </tr>
+    <tr>
+      <td>80% tokens</td>
+      <td><video src="https://github.com/user-attachments/assets/8d090b1a-c1a4-47fc-913c-d17d02295651"></video></td>
+      <td><video src="https://github.com/user-attachments/assets/9469bb84-6dd5-45ca-a6a2-8231b500a22d"></video></td>
+    </tr>
+    <tr>
+      <td>70% tokens</td>
+      <td><video src="https://github.com/user-attachments/assets/bbfb69e3-7967-4c19-907d-db0dd4c7810a"></video></td>
+      <td><video src="https://github.com/user-attachments/assets/20e563bc-b263-42e4-9f72-d207f3e4d083"></video></td>
+    </tr>
+    <tr>
+      <td>60% tokens</td>
+      <td><video src="https://github.com/user-attachments/assets/32d83493-f15a-48aa-8bfe-f48fa10ad9fa"></video></td>
+      <td><video src="https://github.com/user-attachments/assets/376c3483-d63a-4ae7-878b-4ae135d0214c"></video></td>
+    </tr>
+  </tbody>
+</table>
 
 ## Installation
 
