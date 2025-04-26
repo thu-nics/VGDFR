@@ -10,7 +10,7 @@ from pytorch_msssim import ssim as calc_ssim_func
 from hyvideo.modules.models import HYVideoDiffusionTransformer, get_cu_seqlens
 from VGDFR.frame_interpolate import RIFEInterpolator
 from hyvideo.vae import load_vae
-from VGDFR.frame_rate_schedule import similarity_threhshold_schedule, compress_ratio_schedule
+from VGDFR.frame_rate_schedule import similarity_threhshold_schedule, keep_token_ratio_schedule
 
 
 def mod_rope_forward(
@@ -175,9 +175,9 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         progress_bar_config: Dict[str, Any] = None,
         args=None,
         before_compression_steps: int = 5,
-        schedule_mode: str = "compress_ratio",
+        schedule_mode: str = "keep_token_ratio",
         similarity_threshold=0.75,
-        compress_ratio=0.75,
+        keep_token_ratio=0.75,
     ):
         super().__init__(vae, text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args)
         self.frame_interpolator = RIFEInterpolator()
@@ -186,7 +186,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         self.compression_info = None
         self.before_compression_steps = before_compression_steps
         self.similarity_threshold = similarity_threshold
-        self.compress_ratio = compress_ratio
+        self.keep_token_ratio = keep_token_ratio
         self.denoise_latency = None
         self.schedule_mode = schedule_mode
 
@@ -266,11 +266,11 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
                 )
             else:
                 print(
-                    f"Using compress ratio schedule with compress_ratio={self.compress_ratio} and k={self.before_compression_steps}"
+                    f"Using compress ratio schedule with keep_token_ratio={self.keep_token_ratio} and k={self.before_compression_steps}"
                 )
                 merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds = (
-                    compress_ratio_schedule(
-                        image_reshape, ssim_results1, ssim_results2, ssim_results3, self.compress_ratio
+                    keep_token_ratio_schedule(
+                        image_reshape, ssim_results1, ssim_results2, ssim_results3, self.keep_token_ratio
                     )
                 )
             print(f"merge plan: \nmerge2x4_inds:{merge2x4_inds},\nmerge4x4_inds:{merge4x4_inds}")

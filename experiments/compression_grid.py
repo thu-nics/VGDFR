@@ -2,17 +2,12 @@ import os, sys
 
 sys.path.append(".")
 import torch
-from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
-from hyvideo.vae.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
-from hyvideo.vae import load_vae
 from hyvideo.utils.file_utils import save_videos_grid
-from hyvideo.inference import HunyuanVideoSampler
 from pathlib import Path
 from datetime import datetime
 import time
 from hyvideo.config import *
-from VGDFR.hunyuan_vgdfr import VGDFRHunyuanVideoSampler
+from VGDFR.hunyuan_vgdfr import VGDFRHunyuanVideoSampler, HunyuanVideoSampler
 
 
 parser = argparse.ArgumentParser(description="HunyuanVideo inference script")
@@ -22,32 +17,33 @@ parser = add_extra_models_args(parser)
 parser = add_denoise_schedule_args(parser)
 parser = add_inference_args(parser)
 parser = add_parallel_args(parser)
-parser.add_argument("--compress_ratio", type=float, default=0.6, help="Token Compress Ratio for VGDFR")
+parser.add_argument("--keep_token_ratio", type=float, default=0.6, help="Token Compress Ratio for VGDFR")
+parser.add_argument("--prompts_txt_path", type=str, default="data/prompts.txt")
 
 args = parser.parse_args()
 print(args)
 
 models_root_path = Path(args.model_base)
-hunyuan_video_sampler = VGDFRHunyuanVideoSampler.from_pretrained(models_root_path, args=args)
+if args.keep_token_ratio < 1.0:
+    hunyuan_video_sampler = VGDFRHunyuanVideoSampler.from_pretrained(models_root_path, args=args)
+else:
+    hunyuan_video_sampler = HunyuanVideoSampler.from_pretrained(models_root_path, args=args)
 
-prompt_path = "data/prompts_per_dimension_longer"
 all_prompts = []
-for file in os.listdir(prompt_path):
-    with open(os.path.join(prompt_path, file)) as f:
-        all_prompts.extend(f.readlines()[:2])
-# print(all_prompts)
+with open(args.prompts_txt_path) as f:
+    all_prompts.extend(f.readlines())
+all_prompts = [prompt.strip() for prompt in all_prompts]
+print(all_prompts)
 print(len(all_prompts))
-with open("data/prompts.txt", "w") as f:
-    f.writelines(all_prompts)
 
 seed = 3
-args.infer_steps = 50
-width, height = 960, 544
-video_length = 97
+args.infer_steps = args.infer_steps
+width, height = args.video_size
+video_length = args.video_length
 
 for prompt in all_prompts:
-    hunyuan_video_sampler.pipeline.compress_ratio = args.compress_ratio
-    for before_compression_steps in [5, 10]:
+    hunyuan_video_sampler.pipeline.keep_token_ratio = args.keep_token_ratio
+    for before_compression_steps in [int(args.infer_steps * 0.1), int(args.infer_steps * 0.2)]:
         hunyuan_video_sampler.pipeline.before_compression_steps = before_compression_steps
 
         samples = hunyuan_video_sampler.predict(
@@ -72,7 +68,7 @@ for prompt in all_prompts:
                 sample = samples[i].unsqueeze(0)
                 time_flag = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d-%H:%M:%S")
                 file_name = f"raw_seed{seed}_{prompt[:100].replace('/','')}"
-                save_folder = f"{save_path}/vgdfr/cr_{args.compress_ratio}_k{before_compression_steps}"
+                save_folder = f"{save_path}/vgdfr/cr_{args.keep_token_ratio}_k{before_compression_steps}"
                 raw_save_path = f"{save_folder}/{file_name}.mp4"
                 save_videos_grid(sample, raw_save_path, fps=12)
                 torch.save(

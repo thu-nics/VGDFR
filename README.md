@@ -1,6 +1,6 @@
 # VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate
 This is the official implementation of the paper [VGDFR: Diffuison-based Video Generation with Dynamic Frame Rate](https://arxiv.org/abs/2504.12259).
-Diffusion Transformer(DiT)-based generation models have achieved remarkable success in video generation. However, their inherent computational demands pose significant efficiency challenges. We exploit the inherent temporal non-uniformity of real-world videos and observe that videos exhibit dynamic information density, with high-motion segments demanding greater detail preservation than static scenes. Inspired by this temporal non-uniformity, we propose VGDFR, a training-free approach for Diffusion-based Video Generation with Dynamic Latent Frame Rate. VGDFR adaptively adjusts the number of elements in latent space based on the motion frequency of the latent space content, using fewer tokens for low-frequency segments while preserving detail in high-frequency segments. Experiments show that VGDFR can achieve a speedup up to 3x for video generation.
+We exploit the inherent temporal non-uniformity of real-world videos and observe that videos exhibit dynamic information density, with high-motion segments demanding greater detail preservation than static scenes. We propose VGDFR, a training-free approach for Diffusion-based Video Generation with Dynamic Latent Frame Rate. VGDFR adaptively adjusts the number of elements in latent space based on the motion frequency of the latent space content, using fewer tokens for low-frequency segments while preserving detail in high-frequency segments. Experiments show that VGDFR can achieve a speedup up to 3x for video generation.
 
 <!-- ## Result Show -->
 
@@ -51,9 +51,9 @@ The following is a simple example of how to use VGDFR to generate videos.
 ```python
 from VGDFR.hunyuan_vgdfr import VGDFRHunyuanVideoSampler
 hunyuan_video_sampler = VGDFRHunyuanVideoSampler.from_pretrained(models_root_path, args=args)
-hunyuan_video_sampler.pipeline.schedule_mode = "compress_ratio"
+hunyuan_video_sampler.pipeline.schedule_mode = "keep_token_ratio"
 hunyuan_video_sampler.pipeline.before_compression_steps = 5
-hunyuan_video_sampler.pipeline.compress_ratio = 0.75
+hunyuan_video_sampler.pipeline.keep_token_ratio = 0.8
 samples = hunyuan_video_sampler.predict(
       prompt=prompt,
       height=height,
@@ -70,7 +70,7 @@ samples = hunyuan_video_sampler.predict(
 )["samples"]
 ```
 
-We provide two kinds of schedule methods: `compress_ratio` and `similarity_threshold`. The `compress_ratio` method is used to control the token compression ratio of generating, while the `similarity_threshold` method is used to set the minimum similarity threshold to compress adjacent frames.
+We provide two kinds of schedule methods: `keep_token_ratio` and `similarity_threshold`. The `keep_token_ratio` method is used to control the token compression ratio of generating, while the `similarity_threshold` method is used to set the minimum similarity threshold to compress adjacent frames.
 
 The `before_compression_steps` parameter is used to set the number of steps before the compression starts.
 

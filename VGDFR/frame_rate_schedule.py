@@ -50,9 +50,9 @@ def similarity_threhshold_schedule(
     return merge_plan, merge2x4_inds, merge4x4_inds, latent_remain_inds, video_remain_inds
 
 
-def compress_ratio_schedule(image_reshape, ssim_results1, ssim_results2, ssim_results3, compress_ratio):
+def keep_token_ratio_schedule(image_reshape, ssim_results1, ssim_results2, ssim_results3, keep_token_ratio):
     # binary search
-    # compress_ratio is len(video_remain_inds)/len(image_reshape)
+    # keep_token_ratio is len(video_remain_inds)/len(image_reshape)
     left_similarity_threshold = 0.01
     right_similarity_threshold = 0.99
     while left_similarity_threshold + 0.001 < right_similarity_threshold:
@@ -68,15 +68,15 @@ def compress_ratio_schedule(image_reshape, ssim_results1, ssim_results2, ssim_re
                 enable_4x4merge=similarity_threshold < 0.5,
             )
         )
-        if len(video_remain_inds) / len(image_reshape) < compress_ratio:
+        if len(video_remain_inds) / len(image_reshape) < keep_token_ratio:
             left_similarity_threshold = similarity_threshold
             print(
-                f"Now status: {len(video_remain_inds) / len(image_reshape)} < {compress_ratio}, left_similarity_threshold: {left_similarity_threshold}"
+                f"Now status: {len(video_remain_inds) / len(image_reshape)} < {keep_token_ratio}, left_similarity_threshold: {left_similarity_threshold}"
             )
         else:
             right_similarity_threshold = similarity_threshold
             print(
-                f"Now status: {len(video_remain_inds) / len(image_reshape)} > {compress_ratio}, right_similarity_threshold: {right_similarity_threshold}"
+                f"Now status: {len(video_remain_inds) / len(image_reshape)} > {keep_token_ratio}, right_similarity_threshold: {right_similarity_threshold}"
             )
     # print("left_similarity_threshold: ", left_similarity_threshold)
     # print("right_similarity_threshold: ", right_similarity_threshold)
