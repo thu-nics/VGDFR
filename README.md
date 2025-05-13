@@ -44,8 +44,10 @@ We exploit the inherent temporal non-uniformity of real-world videos and observe
 ## Installation
 
 ```bash
+# 0. Install miniconda3
+
 # 1. Create conda environment
-conda create -n vgdfr python==3.10.9
+conda create -n vgdfr python==3.10
 
 # 2. Activate the environment
 conda activate vgdfr
