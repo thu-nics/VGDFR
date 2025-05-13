@@ -73,7 +73,7 @@ python -m pip install xfuser==0.4.3
 wget https://github.com/thu-nics/VGDFR/releases/download/v0.1/flownet.pkl -P data/
 
 # 8. Download the pre-trained HunyuanVideo model to ckpts directory (ref to https://github.com/Tencent/HunyuanVideo/tree/main/ckpts)
-mkdir -p ckpts
+huggingface-cli download tencent/HunyuanVideo --local-dir ./ckpts
 cd ckpts
 huggingface-cli download xtuner/llava-llama-3-8b-v1_1-transformers --local-dir ./llava-llama-3-8b-v1_1-transformers
 huggingface-cli download openai/clip-vit-large-patch14 --local-dir ./text_encoder_2

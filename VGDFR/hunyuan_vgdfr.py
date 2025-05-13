@@ -574,7 +574,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         if self.compress_denoise_steps==1:
             # One-step Denoise
             sigma = self.scheduler.sigmas[self.scheduler.step_index]
-            latents_without_noise = latents_with_noise - noise_pred * sigma
+            latents_without_noise = latents - noise_pred * sigma
         if self.compress_denoise_steps>1:
             # Steps > 1, run multiple denoise steps for compression module
             dt = self.scheduler.sigmas[self.scheduler.step_index]/self.compress_denoise_steps
