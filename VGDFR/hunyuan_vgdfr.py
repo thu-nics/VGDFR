@@ -583,7 +583,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
             left_steps=len(timesteps)-self.before_compression_steps
             compression_denoise_timesteps=[]
             for i in range(1,self.compress_denoise_steps):
-                ind=round(len(timesteps)+left_steps/self.compress_denoise_steps*i)
+                ind=round(self.before_compression_steps+left_steps/self.compress_denoise_steps*i)
                 compression_denoise_timesteps.append(timesteps[ind])
 
             for i, t in enumerate(compression_denoise_timesteps):
