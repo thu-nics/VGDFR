@@ -178,6 +178,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         schedule_mode: str = "keep_token_ratio",
         similarity_threshold=0.75,
         keep_token_ratio=0.75,
+        compress_denoise_steps=1,
     ):
         super().__init__(vae, text_encoder, transformer, scheduler, text_encoder_2, progress_bar_config, args)
         self.frame_interpolator = RIFEInterpolator()
@@ -189,6 +190,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         self.keep_token_ratio = keep_token_ratio
         self.denoise_latency = None
         self.schedule_mode = schedule_mode
+        self.compress_denoise_steps=compress_denoise_steps
 
     def init_compression_vae_module(self):
         compression_vae_module, _, s_ratio, t_ratio = load_vae(
@@ -220,19 +222,18 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         compression_vae_module.tile_latent_min_size = 64
         return compression_vae_module
 
-    def run_compression_module(self, latents_with_noise, freqs_cis, noise_pred, latent_noise):
+    def run_compression_module(self, latents_without_noise, freqs_cis, latent_noise):
         """
         VGDFR Compression Module
         """
-        sigma = self.scheduler.sigmas[self.scheduler.step_index]
-        T = latents_with_noise.shape[2]
-        latents_without_noise = latents_with_noise - noise_pred * sigma
+        
 
         print(f"Run VGDFR Compression Module...")
         vae_dtype = PRECISION_TO_TYPE[self.args.vae_precision]
         vae_autocast_enabled = (vae_dtype != torch.float32) and not self.args.disable_autocast
+        T = latents_without_noise.shape[2]
+        sigma = self.scheduler.sigmas[self.scheduler.step_index]
 
-        # One-step Denoise
         if hasattr(self.vae.config, "shift_factor") and self.vae.config.shift_factor:
             latents_without_noise = (
                 latents_without_noise / self.vae.config.scaling_factor + self.vae.config.shift_factor
@@ -346,7 +347,6 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
-        similarity_threshold: float = 0.7,
         global_freq_layer_ids: List[int] = [4, 19, 23, 31, 35, 36, 37, 40],
         **kwargs,
     ):
@@ -514,7 +514,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
-        # 7.1 Before Compression Inference to get frame rate
+        # 7.1 Before compression, run `before_compression_steps` denoise steps
         assert self.before_compression_steps < num_inference_steps
         latent_noise = latents
         torch.cuda.synchronize()
@@ -568,11 +568,79 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
 
             # compute the previous noisy sample x_t -> x_t-1
             latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+        
+        # 7.2 Run VGDFR Compression Module
+        assert self.compress_denoise_steps>0
+        if self.compress_denoise_steps==1:
+            # One-step Denoise
+            sigma = self.scheduler.sigmas[self.scheduler.step_index]
+            latents_without_noise = latents - noise_pred * sigma
+        if self.compress_denoise_steps>1:
+            # Steps > 1, run multiple denoise steps for compression module
+            dt = self.scheduler.sigmas[self.scheduler.step_index]/self.compress_denoise_steps
+            latents_with_noise=latents
+            latents_with_noise = latents_with_noise - noise_pred * dt
+            left_steps=len(timesteps)-self.before_compression_steps
+            compression_denoise_timesteps=[]
+            for i in range(1,self.compress_denoise_steps):
+                ind=round(self.before_compression_steps+left_steps/self.compress_denoise_steps*i)
+                compression_denoise_timesteps.append(timesteps[ind])
+
+            for i, t in enumerate(compression_denoise_timesteps):
+                latent_model_input = torch.cat([latents_with_noise] * 2) if self.do_classifier_free_guidance else latents
+                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                latent_model_input = latent_model_input.contiguous()
+
+                # t_expand = t.repeat(latent_model_input.shape[0])
+                t_expand = t.view(1)
+                guidance_expand = (
+                    torch.tensor(
+                        [embedded_guidance_scale] * latent_model_input.shape[0],
+                        dtype=torch.float32,
+                        device=device,
+                    ).to(target_dtype)
+                    * 1000.0
+                    if embedded_guidance_scale is not None
+                    else None
+                )
+
+                # predict the noise residual
+                with torch.autocast(device_type="cuda", dtype=target_dtype, enabled=autocast_enabled):
+                    noise_pred = self.transformer(  # For an input image (129, 192, 336) (1, 256, 256)
+                        latent_model_input,  # [2, 16, 33, 24, 42]
+                        t_expand,  # [2]
+                        text_states=prompt_embeds,  # [2, 256, 4096]
+                        text_mask=prompt_mask,  # [2, 256]
+                        text_states_2=prompt_embeds_2,  # [2, 768]
+                        freqs_cos=freqs_cis[0],  # [seqlen, head_dim]
+                        freqs_sin=freqs_cis[1],  # [seqlen, head_dim]
+                        guidance=guidance_expand,
+                        return_dict=True,
+                    )["x"]
+
+                # perform guidance
+                if self.do_classifier_free_guidance:
+                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                    noise_pred = rescale_noise_cfg(
+                        noise_pred,
+                        noise_pred_text,
+                        guidance_rescale=self.guidance_rescale,
+                    )
+
+                # compute the previous noisy sample x_t -> x_t-1
+                latents_with_noise = latents_with_noise - noise_pred * dt
+            latents_without_noise=latents_with_noise
+
+
         latents, local_freqs_cis, global_freqs_cis = self.run_compression_module(
-            latents, freqs_cis, noise_pred, latent_noise
+            latents_without_noise, freqs_cis, latent_noise
         )
 
-        # if is_progress_bar:
+        # 7.3 After compression, run the left denoising steps
         with self.progress_bar(total=num_inference_steps - self.before_compression_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if i < self.before_compression_steps:
