@@ -191,6 +191,9 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         self.denoise_latency = None
         self.schedule_mode = schedule_mode
         self.compress_denoise_steps=compress_denoise_steps
+        self.ablation_random_fusion = False # Only for ablation study, please do not use it
+        self.global_freq_layer_ids = [4, 19, 23, 31, 35, 36, 37, 40]
+        self.compress_similarity_info=None
 
     def init_compression_vae_module(self):
         compression_vae_module, _, s_ratio, t_ratio = load_vae(
@@ -253,6 +256,18 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
             ssim_results3 = calc_ssim_func(image_reshape[:-3], image_reshape[3:], size_average=False, data_range=1.0)
             ssim_results2 = calc_ssim_func(image_reshape[:-2], image_reshape[2:], size_average=False, data_range=1.0)
             ssim_results1 = calc_ssim_func(image_reshape[:-1], image_reshape[1:], size_average=False, data_range=1.0)
+
+            self.compress_similarity_info={
+                "ssim_results1": ssim_results1,
+                "ssim_results2": ssim_results2,
+                "ssim_results3": ssim_results3,
+            }
+
+            if self.ablation_random_fusion:
+                print("\n\n======== WARNING: use ablation_random_fusion ========\n")
+                ssim_results1=torch.rand_like(ssim_results1)
+                ssim_results2=torch.rand_like(ssim_results2)
+                ssim_results3=torch.rand_like(ssim_results3)
 
             # print(f"ssim_results1={ssim_results1}\nssim_results2={ssim_results2}\nssim_results3={ssim_results3}")
 
@@ -347,7 +362,6 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
         enable_tiling: bool = False,
         n_tokens: Optional[int] = None,
         embedded_guidance_scale: Optional[float] = None,
-        global_freq_layer_ids: List[int] = [4, 19, 23, 31, 35, 36, 37, 40],
         **kwargs,
     ):
         callback = kwargs.pop("callback", None)
@@ -675,7 +689,7 @@ class VGDFRHunyuanVideoPipeline(HunyuanVideoPipeline):
                         text_states_2=prompt_embeds_2,  # [2, 768]
                         global_freqs_cis=global_freqs_cis,  # [seqlen, head_dim]
                         local_freqs_cis=local_freqs_cis,  # [seqlen, head_dim]
-                        global_freq_layer_ids=global_freq_layer_ids,
+                        global_freq_layer_ids=self.global_freq_layer_ids,
                         guidance=guidance_expand,
                         return_dict=True,
                     )["x"]
